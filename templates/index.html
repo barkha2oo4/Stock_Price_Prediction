@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stock Price Prediction Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <!-- Summary Card -->
+    <div id="summaryCard" class="bg-yellow-50 shadow-md rounded-lg p-6 mb-6">
+        <h2 class="text-xl font-semibold mb-2">Dashboard Summary</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <p class="text-gray-700"><span class="font-bold">Latest Predicted Price:</span> <span id="summaryPrediction">-</span></p>
+                <p class="text-gray-700"><span class="font-bold">Last Close Price:</span> <span id="summaryLastClose">-</span></p>
+                <p class="text-gray-700"><span class="font-bold">Model Used:</span> <span id="summaryModel">-</span></p>
+            </div>
+            <div>
+                <p class="text-gray-600 text-sm">This dashboard shows the latest stock price prediction, recent price trends, and model details. All prices are in USD. For best results, use the most recent data and compare predictions with the latest closing price.</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="container mx-auto py-8">
+        <h1 class="text-4xl font-bold text-center text-blue-600 mb-8">Stock Price Prediction Dashboard</h1>
+
+    <!-- Input Card -->
+        <div class="bg-white shadow-md rounded-lg p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Select Ticker & Model</h2>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Ticker Dropdown -->
+                <div>
+                    <label class="block font-medium mb-1">Ticker</label>
+                    <select id="ticker" class="w-full border border-gray-300 rounded p-2">
+                        <option value="AAPL">AAPL (Apple)</option>
+                        <option value="MSFT">MSFT (Microsoft)</option>
+                        <option value="TSLA">TSLA (Tesla)</option>
+                        <option value="GOOGL">GOOGL (Alphabet)</option>
+                        <option value="AMZN">AMZN (Amazon)</option>
+                        <option value="NVDA">NVDA (NVIDIA)</option>
+                        <option value="META">META (Meta/Facebook)</option>
+                        <option value="NFLX">NFLX (Netflix)</option>
+                        <option value="JPM">JPM (JP Morgan)</option>
+                        <option value="BAC">BAC (Bank of America)</option>
+                    </select>
+                    <p class="text-gray-500 text-sm mt-1">Select a valid ticker from the dropdown.</p>
+                </div>
+
+                <!-- Model Selection -->
+                <div>
+                    <label class="block font-medium mb-1">Model</label>
+                    <div class="flex items-center space-x-4">
+                        <label class="flex items-center">
+                            <input type="radio" name="model" value="xgb" checked class="mr-2">
+                            XGBoost
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="model" value="lstm" class="mr-2">
+                            LSTM
+                        </label>
+                    </div>
+                    <p class="text-gray-500 text-sm mt-1">XGBoost: fast, good for tabular features. LSTM: sequence-based, may need more data.</p>
+                </div>
+            </div>
+
+            <!-- Predict Button -->
+            <div class="mt-6 text-center">
+                <button id="predictBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded shadow">
+                    Predict Price
+                </button>
+            </div>
+        </div>
+
+    <!-- Output Card -->
+        <div id="outputCard" class="hidden bg-white shadow-md rounded-lg p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-2">Prediction Result</h2>
+            <p class="text-green-600 text-2xl font-bold" id="predictionText"></p>
+            <p class="text-gray-500 text-sm mt-1" id="modelUsed"></p>
+        </div>
+
+        <!-- Historical Chart -->
+        <div class="bg-white shadow-md rounded-lg p-6">
+            <h2 class="text-xl font-semibold mb-4">Last 30 Days Price & Volume</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                    <h3 class="font-semibold mb-2">Close Price</h3>
+                    <canvas id="closeChart" height="120"></canvas>
+                </div>
+                <div>
+                    <h3 class="font-semibold mb-2">OHLC (Open/High/Low/Close)</h3>
+                    <canvas id="ohlcChart" height="120"></canvas>
+                </div>
+            </div>
+            <div class="mt-6">
+                <h3 class="font-semibold mb-2">Volume</h3>
+                <canvas id="volumeChart" height="80"></canvas>
+            </div>
+        </div>
+
+        <!-- Error Message -->
+        <div id="errorMsg" class="hidden mt-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
+        </div>
+    </div>
+
+    <script>
+        async function fetchHistory(ticker) {
+            try {
+                const response = await fetch(`/history?ticker=${ticker}`);
+                const data = await response.json();
+                if(data.error){
+                    showError(data.error);
+                    return null;
+                }
+                return data;
+            } catch(err) {
+                showError('Failed to fetch history data.');
+                return null;
+            }
+        }
+
+        function showError(msg) {
+            const errorDiv = document.getElementById('errorMsg');
+            errorDiv.textContent = msg;
+            errorDiv.classList.remove('hidden');
+        }
+
+        function clearError() {
+            const errorDiv = document.getElementById('errorMsg');
+            errorDiv.classList.add('hidden');
+            errorDiv.textContent = '';
+        }
+
+
+        async function updateChart(ticker) {
+            const data = await fetchHistory(ticker);
+            if(!data) return;
+
+            // Flatten arrays for Chart.js
+            function flatten(arr) {
+                return arr.map(x => Array.isArray(x) ? x[0] : x);
+            }
+            const closes = flatten(data.closes);
+            const opens = flatten(data.opens);
+            const highs = flatten(data.highs);
+            const lows = flatten(data.lows);
+            const volumes = flatten(data.volumes);
+
+            // Close Price Line Chart
+            const closeCtx = document.getElementById('closeChart').getContext('2d');
+            if(window.closeChartObj) window.closeChartObj.destroy();
+            window.closeChartObj = new Chart(closeCtx, {
+                type: 'line',
+                data: {
+                    labels: data.dates,
+                    datasets: [{
+                        label: 'Close',
+                        data: closes,
+                        borderColor: 'rgba(59, 130, 246, 1)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                        fill: true,
+                        tension: 0.3,
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: { x: { display: false }, y: { display: true } }
+                }
+            });
+
+            // OHLC Chart (multi-line)
+            const ohlcCtx = document.getElementById('ohlcChart').getContext('2d');
+            if(window.ohlcChartObj) window.ohlcChartObj.destroy();
+            window.ohlcChartObj = new Chart(ohlcCtx, {
+                type: 'line',
+                data: {
+                    labels: data.dates,
+                    datasets: [
+                        { label: 'Open', data: opens, borderColor: '#6366f1', fill: false, tension: 0.2 },
+                        { label: 'High', data: highs, borderColor: '#22c55e', fill: false, tension: 0.2 },
+                        { label: 'Low', data: lows, borderColor: '#ef4444', fill: false, tension: 0.2 },
+                        { label: 'Close', data: closes, borderColor: '#0ea5e9', fill: false, tension: 0.2 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: true } },
+                    scales: { x: { display: false }, y: { display: true } }
+                }
+            });
+
+            // Volume Bar Chart
+            const volumeCtx = document.getElementById('volumeChart').getContext('2d');
+            if(window.volumeChartObj) window.volumeChartObj.destroy();
+            window.volumeChartObj = new Chart(volumeCtx, {
+                type: 'bar',
+                data: {
+                    labels: data.dates,
+                    datasets: [{
+                        label: 'Volume',
+                        data: volumes,
+                        backgroundColor: 'rgba(16, 185, 129, 0.4)',
+                        borderColor: 'rgba(16, 185, 129, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: { x: { display: false }, y: { display: true } }
+                }
+            });
+        }
+
+
+        async function predictPrice() {
+            clearError();
+            const ticker = document.getElementById('ticker').value;
+            const model = document.querySelector('input[name="model"]:checked').value;
+
+            const response = await fetch('/predict', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ticker, model})
+            });
+
+            const data = await response.json();
+
+            if(data.error){
+                showError(data.error);
+                document.getElementById('outputCard').classList.add('hidden');
+                return;
+            }
+
+            document.getElementById('outputCard').classList.remove('hidden');
+            document.getElementById('predictionText').textContent = `$${data.prediction.toFixed(2)}`;
+            document.getElementById('modelUsed').textContent = `Model used: ${data.model}`;
+
+            // Update summary card
+            document.getElementById('summaryPrediction').textContent = `$${data.prediction.toFixed(2)}`;
+            document.getElementById('summaryModel').textContent = data.model.toUpperCase();
+
+            // Fetch last close price for summary
+            const hist = await fetch(`/history?ticker=${ticker}`);
+            const histData = await hist.json();
+            if(histData && histData.closes && histData.closes.length > 0) {
+                const lastClose = histData.closes[histData.closes.length - 1];
+                document.getElementById('summaryLastClose').textContent = `$${Number(lastClose).toFixed(2)}`;
+            } else {
+                document.getElementById('summaryLastClose').textContent = '-';
+            }
+
+            updateChart(ticker);
+        }
+
+        document.getElementById('predictBtn').addEventListener('click', predictPrice);
+
+        // Initialize chart for default ticker
+        updateChart(document.getElementById('ticker').value);
+    </script>
+
+</body>
+</html>
