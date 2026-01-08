@@ -22,7 +22,9 @@ def rmse(a, b):
 
 
 # ------------------ XGBoost Training ------------------ #
-def train_xgboost(df_features, output_dir):
+def train_xgboost(df_features, output_dir, ticker):
+    stock_dir = os.path.join(output_dir, ticker)
+    os.makedirs(stock_dir, exist_ok=True)
 
     df = df_features.dropna().copy()
     # Flatten multi-index columns if present
@@ -57,13 +59,16 @@ def train_xgboost(df_features, output_dir):
     print("XGBoost RMSE:", rmse(y_test, preds))
 
     # Save model and feature columns
-    joblib.dump(model, os.path.join(output_dir, 'xgb_model.joblib'))
-    joblib.dump(FEATURES, os.path.join(output_dir, 'feature_cols.joblib'))
-    print('Saved xgb_model.joblib and feature_cols.joblib')
+    joblib.dump(model, os.path.join(stock_dir, 'xgb_model.joblib'))
+    joblib.dump(FEATURES, os.path.join(stock_dir, 'feature_cols.joblib'))
+    print(f'Saved xgb_model.joblib and feature_cols.joblib for {ticker}')
 
 
 # ------------------ LSTM Training ------------------ #
-def train_lstm(series_df, output_dir, seq_len=30):
+def train_lstm(series_df, output_dir, ticker, seq_len=30):
+    stock_dir = os.path.join(output_dir, ticker)
+    os.makedirs(stock_dir, exist_ok=True)
+    
     s = series_df[['Close']].copy()
     scaled, scaler = scale_series(s)
 
@@ -79,11 +84,11 @@ def train_lstm(series_df, output_dir, seq_len=30):
         Dropout(0.2),
         Dense(1)
     ])
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001), loss='mse')
+    model.compile(optimizer='adam', loss='mse')
 
     es = EarlyStopping(patience=15, restore_best_weights=True)
     model.fit(X_train, y_train, validation_data=(X_test, y_test),
-              epochs=100, batch_size=32, callbacks=[es], verbose=1)
+    epochs=100, batch_size=32, callbacks=[es], verbose='auto')
 
     preds = model.predict(X_test).ravel()
     preds_rescaled = scaler.inverse_transform(preds.reshape(-1,1)).ravel()
@@ -91,9 +96,9 @@ def train_lstm(series_df, output_dir, seq_len=30):
     print('LSTM RMSE:', rmse(y_test_rescaled, preds_rescaled))
 
     # Save model and scaler
-    model.save(os.path.join(output_dir, 'lstm_model.keras'))
-    joblib.dump(scaler, os.path.join(output_dir, 'scaler.joblib'))
-    print('Saved lstm_model.h5 and scaler.joblib')
+    model.save(os.path.join(stock_dir, 'lstm_model.keras'))
+    joblib.dump(scaler, os.path.join(stock_dir, 'scaler.joblib'))
+    print(f'Saved lstm_model.keras and scaler.joblib for {ticker}')
 
 
 # ------------------ Main ------------------ #
@@ -109,20 +114,15 @@ if __name__ == '__main__':
     df = fetch_data(args.ticker, start=args.start)
 
     # Create features
-    tech = create_technical_features(df)
-    df_lags = create_lag_features(tech)
+    if df is not None:
+        tech = create_technical_features(df)
+        df_lags = create_lag_features(tech)
 
-    # Train XGBoost
-    train_xgboost(df_lags, args.out)
+        # Train XGBoost
+        train_xgboost(df_lags, args.out, args.ticker)
 
     # Train LSTM
-    train_lstm(tech[['Close']], args.out, seq_len=30)
+    train_lstm(tech[['Close']], args.out, args.ticker, seq_len=30)
 
-    print('All models trained and saved to', args.out)
+    print(f'All models trained and saved to {os.path.join(args.out, args.ticker)}')
 # ------------------ End ------------------ #
-def fetch_data(ticker, start='2015-01-01'):
-    df = yf.download(ticker, start=start)
-    return df
-
-df = fetch_data('AAPL')
-print(df.head())

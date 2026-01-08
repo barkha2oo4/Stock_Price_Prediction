@@ -23,35 +23,44 @@ MODEL_DIR = os.environ.get('MODEL_DIR', 'models')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # Global variables
-xgb_model = None
-lstm_model = None
-scaler = None
-feature_cols = None  # XGBoost feature columns
+models = {}  # Dictionary to store models for each stock
 
 # ------------------ Load Models ------------------ #
-def load_models():
-    global xgb_model, lstm_model, scaler, feature_cols
-    try:
-        xgb_path = os.path.join(MODEL_DIR, 'xgb_model.joblib')
-        lstm_path = os.path.join(MODEL_DIR, 'lstm_model.keras')
-        scaler_path = os.path.join(MODEL_DIR, 'scaler.joblib')
-        feature_cols_path = os.path.join(MODEL_DIR, 'feature_cols.joblib')
+def load_stock_models(ticker):
+    if ticker in models:
+        return models[ticker]
+    
+    stock_dir = os.path.join(MODEL_DIR, ticker)
+    if not os.path.exists(stock_dir):
+        return None
 
+    try:
+        xgb_path = os.path.join(stock_dir, 'xgb_model.joblib')
+        lstm_path = os.path.join(stock_dir, 'lstm_model.keras')
+        scaler_path = os.path.join(stock_dir, 'scaler.joblib')
+        feature_cols_path = os.path.join(stock_dir, 'feature_cols.joblib')
+
+        stock_models = {}
+        
         if os.path.exists(xgb_path):
-            xgb_model = joblib.load(xgb_path)
-            logging.info('Loaded XGBoost model.')
+            stock_models['xgb_model'] = joblib.load(xgb_path)
+            logging.info(f'Loaded XGBoost model for {ticker}.')
 
         if os.path.exists(feature_cols_path):
-            feature_cols = joblib.load(feature_cols_path)
-            logging.info('Loaded XGBoost feature columns.')
+            stock_models['feature_cols'] = joblib.load(feature_cols_path)
+            logging.info(f'Loaded XGBoost feature columns for {ticker}.')
 
         if os.path.exists(lstm_path) and load_model:
-            lstm_model = load_model(lstm_path)
-            logging.info('Loaded LSTM model.')
+            stock_models['lstm_model'] = load_model(lstm_path)
+            logging.info(f'Loaded LSTM model for {ticker}.')
 
         if os.path.exists(scaler_path):
-            scaler = joblib.load(scaler_path)
-            logging.info('Loaded scaler.')
+            stock_models['scaler'] = joblib.load(scaler_path)
+            logging.info(f'Loaded scaler for {ticker}.')
+            
+        if stock_models:
+            models[ticker] = stock_models
+            return stock_models
     except Exception as e:
         logging.error(f'Error loading models: {e}')
 
@@ -66,21 +75,20 @@ def home():
 def health():
     return jsonify({
         'status': 'ok',
-        'xgb_model': xgb_model is not None,
-        'lstm_model': lstm_model is not None,
-        'scaler': scaler is not None
+        'loaded_models': list(models.keys())
     })
 
 
 @app.route('/version')
 def version():
     import sys
-    import xgboost, tensorflow, flask
+    import xgboost, tensorflow, pkg_resources
+    flask_version = pkg_resources.get_distribution('flask').version
     return jsonify({
         'python': sys.version,
         'xgboost': xgboost.__version__,
         'tensorflow': tensorflow.__version__,
-        'flask': flask.__version__
+        'flask': flask_version
     })
 
 
@@ -113,14 +121,19 @@ def predict():
     try:
         payload = request.get_json()
         model_choice = payload.get('model', 'xgb')
+        ticker = payload.get('ticker', 'AAPL')
+
+        # Load models for the specified ticker
+        stock_models = load_stock_models(ticker)
+        if stock_models is None:
+            return jsonify({'error': f'No models found for ticker {ticker}'}), 404
 
         # Get data
         if 'data' in payload:
             df = pd.DataFrame(payload['data'])
             if 'index' in df.columns:
-                df.index = pd.to_datetime(df['index'])
+                df.set_index(pd.to_datetime(df['index']), inplace=True)
         else:
-            ticker = payload.get('ticker', 'AAPL')
             df = fetch_data(ticker)
 
         # Feature engineering
@@ -133,28 +146,28 @@ def predict():
 
         # ---------- XGBoost Prediction ---------- #
         if model_choice == 'xgb':
-            if xgb_model is None or feature_cols is None:
+            if 'xgb_model' not in stock_models or 'feature_cols' not in stock_models:
                 return jsonify({'error': 'XGBoost model not loaded.'}), 500
             try:
-                X = last_row[feature_cols].values  # ensure correct order
-                pred = xgb_model.predict(X)[0]
-                return jsonify({'model':'xgb', 'prediction': float(pred)})
+                X = last_row[stock_models['feature_cols']].values
+                pred = stock_models['xgb_model'].predict(X)[0]
+                return jsonify({'model':'xgb', 'prediction': float(pred), 'ticker': ticker})
             except Exception as e:
                 return jsonify({'error': f'XGBoost prediction failed: {e}'}), 500
 
         # ---------- LSTM Prediction ---------- #
         elif model_choice == 'lstm':
-            if lstm_model is None or scaler is None:
+            if 'lstm_model' not in stock_models or 'scaler' not in stock_models:
                 return jsonify({'error': 'LSTM model or scaler not loaded.'}), 500
-            seq_len = lstm_model.input_shape[1]
+            seq_len = stock_models['lstm_model'].input_shape[1]
             series = tech[['Close']].copy()
-            scaled = scaler.transform(series.values.reshape(-1,1))
+            scaled = stock_models['scaler'].transform(series.values.reshape(-1,1))
             if len(scaled) < seq_len:
                 return jsonify({'error': f'Not enough data for LSTM sequence. Require at least {seq_len} rows.'}), 400
             seq = scaled[-seq_len:].reshape(1, seq_len, 1)
-            pred_scaled = lstm_model.predict(seq, verbose=0).ravel()[0]
-            pred = scaler.inverse_transform([[pred_scaled]])[0][0]
-            return jsonify({'model':'lstm', 'prediction': float(pred)})
+            pred_scaled = stock_models['lstm_model'].predict(seq, verbose=0).ravel()[0]
+            pred = stock_models['scaler'].inverse_transform([[pred_scaled]])[0][0]
+            return jsonify({'model':'lstm', 'prediction': float(pred), 'ticker': ticker})
 
         else:
             return jsonify({'error': 'Invalid model choice. Choose "xgb" or "lstm".'}), 400
@@ -166,5 +179,5 @@ def predict():
 
 # ------------------ Main ------------------ #
 if __name__ == '__main__':
-    load_models()
+    # Models will be loaded on-demand for each ticker
     app.run(host='0.0.0.0', port=5000, debug=True)
